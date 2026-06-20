@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>이름 로또 추첨기</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  #panel {
+    position: fixed; top: 16px; left: 16px; width: 240px; z-index: 10;
+    background: rgba(15, 22, 42, 0.82); color: #e9eefb;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+    padding: 14px; backdrop-filter: blur(8px);
+  }
+  #panel h1 { font-size: 16px; margin: 0 0 10px; letter-spacing: -0.5px; }
+  #panel label { font-size: 12px; opacity: 0.8; display: block; margin: 8px 0 4px; }
+  #names { width: 100%; height: 150px; resize: vertical; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.25);
+    color: #fff; padding: 8px; font-size: 13px; line-height: 1.5; }
+  .row { display: flex; gap: 8px; margin-top: 12px; }
+  button { flex: 1; border: 0; border-radius: 10px; padding: 10px; font-size: 14px;
+    font-weight: 700; cursor: pointer; color: #0b1020; }
+  #ready { background: linear-gradient(135deg, #6dd5ed, #2193b0); color: #04222b; }
+  #draw { background: linear-gradient(135deg, #ffd400, #ff9d00); }
+  #reset { background: rgba(255,255,255,0.15); color: #fff; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #status { margin-top: 10px; font-size: 12px; min-height: 16px; opacity: 0.9; }
+
+  #winner {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; text-align: center; pointer-events: none; display: none;
+  }
+  #winner .cap { font-size: 18px; color: #ffd400; font-weight: 800;
+    text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+  #winner .list { display: flex; gap: 10px; justify-content: center; margin-top: 8px; flex-wrap: wrap; }
+  #winner .name {
+    font-size: 30px; font-weight: 900; color: #fff; padding: 8px 18px;
+    background: linear-gradient(135deg, rgba(255,212,0,.95), rgba(255,120,0,.95));
+    border-radius: 999px; -webkit-text-fill-color: #2a1500;
+    box-shadow: 0 8px 30px rgba(0,0,0,.45); animation: pop .5s cubic-bezier(.2,1.4,.4,1);
+  }
+  @keyframes pop { 0% { transform: scale(0); } 100% { transform: scale(1); } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="panel">
+  <h1>🎱 이름 로또 추첨기</h1>
+  <label>이름 (줄바꿈 또는 쉼표로 구분)</label>
+  <textarea id="names">홍길동
+김철수
+이영희
+박민수
+최지우
+정대만
+강백호
+서태웅
+윤서연
+임도현
+한지민
+오세훈
+신유나
+배준호
+조은서
+권태양
+남궁민
+황보경</textarea>
+  <div class="row">
+    <button id="ready">준비</button>
+    <button id="draw" disabled>뽑기 시작</button>
+  </div>
+  <div class="row">
+    <button id="reset">리셋</button>
+  </div>
+  <div id="status">이름을 넣고 [준비]를 누르세요.</div>
+</div>
+
+<div id="winner"><div class="cap">🎉 당첨 🎉</div><div class="list"></div></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as CANNON from 'cannon-es';
+
+// ---------- tunables ----------
+const R = 5;            // sphere radius
+const r = 0.42;         // ball radius
+const HOLE = 0.8;       // top opening radius (a bit > r so one ball fits)
+const TUBE = 0.95;      // tube inner radius
+const TUBE_TOP = R + 4;
+const TRAY_Y = R + 4.45;
+const AIR = 44;         // air-blower force
+const SUCTION_MAX = 130;
+const CHURN_TIME = 2.2; // seconds of churn before the hole opens
+const RAMP = 3.5;       // seconds for suction to reach max
+const WALL_REST = 0.55; // wall bounciness
+const RISE_DUR = 1.7;   // seconds for a ball to ride the tube up
+const SHUFFLE = 14;     // shuffle-burst impulse strength
+const SHUFFLE_EVERY = 0.7; // seconds between shuffle bursts while on standby
+const PALETTE = ['#FFD400','#1E88E5','#E53935','#43A047','#8E24AA','#FB8C00','#00ACC1','#212121'];
+
+// ---------- three.js scene ----------
+const app = document.getElementById('app');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1020);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(0, 5, 20);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+app.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3, 0);
+controls.enablePan = false;
+controls.minDistance = 9;
+controls.maxDistance = 45;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x33384a, 0.7));
+const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+dir.position.set(6, 12, 8);
+scene.add(dir);
+const pt = new THREE.PointLight(0xffeebb, 0.6, 60);
+pt.position.set(0, R + 3, 4);
+scene.add(pt);
+
+// glass sphere
+scene.add(new THREE.Mesh(
+  new THREE.SphereGeometry(R, 48, 32),
+  new THREE.MeshPhongMaterial({ color: 0x9fd0ff, transparent: true, opacity: 0.14,
+    side: THREE.DoubleSide, shininess: 120, specular: 0xffffff })
+));
+// equator ring
+const ringMat = new THREE.MeshStandardMaterial({ color: 0x8892a6, metalness: 0.8, roughness: 0.35 });
+const eq = new THREE.Mesh(new THREE.TorusGeometry(R + 0.03, 0.12, 12, 80), ringMat);
+eq.rotation.x = Math.PI / 2;
+scene.add(eq);
+// hole rim
+const rim = new THREE.Mesh(new THREE.TorusGeometry(HOLE, 0.1, 10, 40), ringMat);
+rim.position.y = R; rim.rotation.x = Math.PI / 2;
+scene.add(rim);
+// tube
+scene.add(new THREE.Mesh(
+  new THREE.CylinderGeometry(TUBE, TUBE, 4, 28, 1, true),
+  new THREE.MeshPhongMaterial({ color: 0xbfe0ff, transparent: true, opacity: 0.16,
+    side: THREE.DoubleSide, shininess: 120, specular: 0xffffff })
+));
+const tubeMesh = scene.children[scene.children.length - 1];
+tubeMesh.position.y = R + 2;
+// tray (where winners rest)
+scene.add(new THREE.Mesh(
+  new THREE.CylinderGeometry(3.2, 3.2, 0.3, 40),
+  new THREE.MeshStandardMaterial({ color: 0x2a3350, metalness: 0.5, roughness: 0.5 })
+)).position.y = R + 3.95;
+// base
+scene.add(new THREE.Mesh(
+  new THREE.CylinderGeometry(R * 0.55, R * 0.8, 2.2, 40),
+  new THREE.MeshStandardMaterial({ color: 0x1b2540, metalness: 0.6, roughness: 0.5 })
+)).position.y = -R - 0.6;
+
+// ---------- physics ----------
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -22, 0) });
+world.broadphase = new CANNON.SAPBroadphase(world);
+const ballMat = new CANNON.Material('ball');
+world.addContactMaterial(new CANNON.ContactMaterial(ballMat, ballMat,
+  { restitution: 0.55, friction: 0.05 }));
+const ZERO = new CANNON.Vec3();
+const ftmp = new CANNON.Vec3();
+const ntmp = new CANNON.Vec3();
+
+// ---------- state ----------
+let balls = [];        // { body, mesh, name }
+let trayMeshes = [];   // resting winner meshes
+let winner = null;
+let mode = 'idle';     // 'idle' | 'standby' (shuffling) | 'draw'
+let finished = false;  // winner captured -> balls settle
+let phaseTime = 0;     // time since the draw started
+let shuffleTimer = 0;
+let riser = null;      // ball currently riding the tube
+const clock = new THREE.Clock();
+
+const $ = id => document.getElementById(id);
+const ease = t => 1 - Math.pow(1 - t, 3);
+
+function parseNames(text) {
+  return text.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+}
+
+function makeBallTexture(name, color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const x = c.getContext('2d');
+  x.fillStyle = color; x.fillRect(0, 0, 256, 256);
+  x.fillStyle = 'rgba(255,255,255,0.92)';
+  x.beginPath(); x.arc(128, 128, 86, 0, Math.PI * 2); x.fill();
+  x.fillStyle = '#1a1a1a'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  let fs = 70;
+  do { x.font = `bold ${fs}px sans-serif`; fs -= 4; }
+  while (x.measureText(name).width > 150 && fs > 14);
+  x.fillText(name, 128, 130);
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function addBall(name, i) {
+  const color = PALETTE[i % PALETTE.length];
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(r, 24, 18),
+    new THREE.MeshPhongMaterial({ map: makeBallTexture(name, color), shininess: 60, specular: 0x333333 })
+  );
+  scene.add(mesh);
+
+  const rad = (R - r - 0.4) * Math.cbrt(Math.random());
+  const th = Math.random() * Math.PI * 2;
+  const ph = Math.acos(2 * Math.random() - 1);
+  const body = new CANNON.Body({
+    mass: 1, material: ballMat, shape: new CANNON.Sphere(r),
+    position: new CANNON.Vec3(
+      rad * Math.sin(ph) * Math.cos(th),
+      rad * Math.cos(ph) * 0.6 - 0.8,
+      rad * Math.sin(ph) * Math.sin(th)),
+    velocity: new CANNON.Vec3((Math.random()-0.5)*4, Math.random()*4, (Math.random()-0.5)*4),
+    linearDamping: 0.02, angularDamping: 0.1,
+  });
+  world.addBody(body);
+  balls.push({ body, mesh, name });
+}
+
+function shuffleBurst() {
+  for (const b of balls) {
+    ftmp.set((Math.random()-0.5)*SHUFFLE*2, (Math.random()-0.2)*SHUFFLE*2, (Math.random()-0.5)*SHUFFLE*2);
+    b.body.applyImpulse(ftmp, ZERO);
+  }
+}
+
+function applyForces(suction) {
+  for (const b of balls) {
+    const p = b.body.position;
+    // air blows up from the bottom, fades toward the top -> fountain circulation, no ceiling-pinning
+    const lift = AIR * 2.4 * Math.max(0, (R - p.y) / (2 * R));
+    ftmp.set((Math.random()-0.5)*AIR*2, Math.random()*lift, (Math.random()-0.5)*AIR*2);
+    b.body.applyForce(ftmp, ZERO);
+    // suction toward the hole, on upper balls
+    if (suction > 0 && p.y > 0.5) {
+      const up = suction * (0.4 + 0.6 * (p.y / R));
+      ftmp.set(-p.x * suction * 0.35, up, -p.z * suction * 0.35);
+      b.body.applyForce(ftmp, ZERO);
+    }
+  }
+}
+
+function enforceBoundary(holeOpen) {
+  const maxR = R - r;
+  for (const b of balls) {
+    const p = b.body.position, v = b.body.velocity;
+    const horiz = Math.hypot(p.x, p.z);
+    const nearHole = holeOpen && horiz < HOLE && p.y > 0;
+    const dist = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+    if (!nearHole && dist > maxR) {
+      const inv = 1 / dist;
+      ntmp.set(p.x*inv, p.y*inv, p.z*inv);
+      p.set(ntmp.x*maxR, ntmp.y*maxR, ntmp.z*maxR);
+      const vn = v.x*ntmp.x + v.y*ntmp.y + v.z*ntmp.z;
+      if (vn > 0) { const k = (1+WALL_REST)*vn; v.set(v.x-k*ntmp.x, v.y-k*ntmp.y, v.z-k*ntmp.z); }
+    }
+    // tube wall (above sphere top)
+    if (p.y > R && horiz > TUBE - r) {
+      const inv2 = 1 / horiz, nx = p.x*inv2, nz = p.z*inv2;
+      p.x = nx*(TUBE-r); p.z = nz*(TUBE-r);
+      const vn2 = v.x*nx + v.z*nz;
+      if (vn2 > 0) { v.x -= 1.3*vn2*nx; v.z -= 1.3*vn2*nz; }
+    }
+  }
+}
+
+function checkCapture() {
+  if (riser || finished) return;
+  for (const b of balls) {
+    const p = b.body.position;
+    if (p.y > R - r && Math.hypot(p.x, p.z) < HOLE && b.body.velocity.y > 0) {
+      capture(b);
+      return;
+    }
+  }
+}
+
+function capture(b) {
+  balls = balls.filter(x => x !== b);
+  world.removeBody(b.body);
+  finished = true; // close the hole + stop suction so no other ball escapes
+  riser = {
+    mesh: b.mesh, name: b.name, t: 0,
+    from: b.mesh.position.clone(),
+    mid: new THREE.Vector3(0, TUBE_TOP, 0),
+    slot: new THREE.Vector3(0, TRAY_Y, 0),
+  };
+  setStatus('🎈 튜브로 올라가는 중...');
+}
+
+function updateRiser(dt) {
+  if (!riser) return;
+  riser.t += dt / RISE_DUR;
+  const t = Math.min(riser.t, 1);
+  const m = new THREE.Vector3();
+  if (t < 0.55) m.lerpVectors(riser.from, riser.mid, ease(t / 0.55));
+  else m.lerpVectors(riser.mid, riser.slot, ease((t - 0.55) / 0.45));
+  riser.mesh.position.copy(m);
+  riser.mesh.rotation.y += dt * 3;
+  if (t >= 1) finishRiser();
+}
+
+function finishRiser() {
+  riser.mesh.position.copy(riser.slot);
+  trayMeshes.push(riser.mesh);
+  winner = riser.name;
+  showWinner(winner);
+  ding(1);
+  setStatus(`🎉 당첨: ${winner}`);
+  riser = null;
+}
+
+// ---------- ui ----------
+function setStatus(s) { $('status').textContent = s; }
+
+function showWinner(name) {
+  const box = $('winner');
+  box.style.display = 'block';
+  const el = document.createElement('div');
+  el.className = 'name'; el.textContent = name;
+  box.querySelector('.list').appendChild(el);
+}
+
+let audio;
+function ding(n) {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const base = 523.25; // C5
+    [0, 4, 7].forEach((semi, i) => {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = base * Math.pow(2, semi / 12) * (1 + 0.05 * (n - 1));
+      o.type = 'triangle';
+      o.connect(g); g.connect(audio.destination);
+      const t0 = audio.currentTime + i * 0.08;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
+      o.start(t0); o.stop(t0 + 0.4);
+    });
+  } catch (e) { /* audio optional */ }
+}
+
+function clearBalls() {
+  for (const b of balls) { world.removeBody(b.body); scene.remove(b.mesh); }
+  for (const m of trayMeshes) scene.remove(m);
+  balls = []; trayMeshes = [];
+}
+
+function setButtons() {
+  $('ready').disabled = mode !== 'idle';
+  $('draw').disabled = mode !== 'standby';
+}
+
+function reset() {
+  mode = 'idle'; finished = false; riser = null;
+  phaseTime = 0; winner = null;
+  clearBalls();
+  const box = $('winner'); box.style.display = 'none'; box.querySelector('.list').innerHTML = '';
+  setStatus('이름을 넣고 [준비]를 누르세요.');
+  setButtons();
+}
+
+function ready() {
+  reset();
+  const names = parseNames($('names').value);
+  if (names.length === 0) { setStatus('⚠️ 이름을 한 개 이상 넣어주세요.'); return; }
+  names.forEach(addBall);
+  mode = 'standby'; shuffleTimer = SHUFFLE_EVERY;
+  setStatus('🌀 섞는 중... 준비되면 [뽑기 시작]');
+  setButtons();
+}
+
+function beginDraw() {
+  if (mode !== 'standby') return;
+  mode = 'draw'; phaseTime = 0;
+  shuffleBurst(); // one last big mix
+  setStatus('추첨 중... 🎲');
+  setButtons();
+}
+
+$('ready').addEventListener('click', ready);
+$('draw').addEventListener('click', beginDraw);
+$('reset').addEventListener('click', reset);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- loop ----------
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 1 / 30);
+
+  if (mode !== 'idle') {
+    const drawing = mode === 'draw' && !finished;
+    if (drawing) phaseTime += dt;
+    const holeOpen = drawing && phaseTime > CHURN_TIME;
+    const suction = holeOpen ? Math.min((phaseTime - CHURN_TIME) / RAMP, 1) * SUCTION_MAX : 0;
+
+    if (!finished) {
+      applyForces(suction);
+      if (mode === 'standby') {                 // keep shuffling while waiting
+        shuffleTimer -= dt;
+        if (shuffleTimer <= 0) { shuffleBurst(); shuffleTimer = SHUFFLE_EVERY; }
+      }
+    }
+    world.step(1 / 60, dt, 5);
+    enforceBoundary(holeOpen);
+    for (const b of balls) {
+      b.mesh.position.copy(b.body.position);
+      b.mesh.quaternion.copy(b.body.quaternion);
+    }
+    if (holeOpen) checkCapture();
+  }
+
+  updateRiser(dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ---------- self-check ----------
+(function selfCheck() {
+  const a = parseNames('홍길동\n김철수, 이영희\n\n  박민수  ');
+  console.assert(a.length === 4 && a[3] === '박민수', 'parseNames failed', a);
+  console.log('[self-check] parseNames ok:', a);
+})();
+</script>
+</body>
+</html>
