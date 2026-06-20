@@ -1,609 +1,532 @@
-const canvas = document.querySelector("#aimCanvas");
-const ctx = canvas.getContext("2d");
+const MODES = {
+  precision: {
+    title: "정밀 조준",
+    label: "정밀",
+    targetCount: 1,
+    radiusMax: 34,
+    radiusMin: 15,
+    life: 0,
+    color: "#4ee6a8",
+    baseScore: 110,
+  },
+  burst: {
+    title: "스피드 샷",
+    label: "스피드",
+    targetCount: 4,
+    radiusMax: 31,
+    radiusMin: 13,
+    life: 0,
+    color: "#67d7ff",
+    baseScore: 82,
+  },
+  reflex: {
+    title: "반응 테스트",
+    label: "반응",
+    targetCount: 1,
+    radiusMax: 36,
+    radiusMin: 18,
+    life: 1250,
+    color: "#ff6a4d",
+    baseScore: 120,
+  },
+};
 
-const modeButtons = [...document.querySelectorAll(".mode-button")];
-const durationSelect = document.querySelector("#durationSelect");
-const sizeRange = document.querySelector("#sizeRange");
-const speedRange = document.querySelector("#speedRange");
-const startButton = document.querySelector("#startButton");
-const resetButton = document.querySelector("#resetButton");
-const againButton = document.querySelector("#againButton");
-const resultOverlay = document.querySelector("#resultOverlay");
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
-const scoreValue = document.querySelector("#scoreValue");
-const accuracyValue = document.querySelector("#accuracyValue");
-const reactionValue = document.querySelector("#reactionValue");
-const streakValue = document.querySelector("#streakValue");
-const timerValue = document.querySelector("#timerValue");
-const statusDot = document.querySelector("#statusDot");
-const statusText = document.querySelector("#statusText");
-const finalScore = document.querySelector("#finalScore");
-const finalAccuracy = document.querySelector("#finalAccuracy");
-const finalReaction = document.querySelector("#finalReaction");
+const ui = {
+  canvas: $("#aimCanvas"),
+  arena: $("#arena"),
+  overlay: $("#screenOverlay"),
+  overlayTitle: $("#overlayTitle"),
+  overlayStart: $("#overlayStart"),
+  startBtn: $("#startBtn"),
+  resetBtn: $("#resetBtn"),
+  difficulty: $("#difficulty"),
+  difficultyValue: $("#difficultyValue"),
+  modePill: $("#modePill"),
+  statePill: $("#statePill"),
+  arenaTitle: $("#arenaTitle"),
+  timeValue: $("#timeValue"),
+  timerFill: $("#timerFill"),
+  scoreValue: $("#scoreValue"),
+  accuracyValue: $("#accuracyValue"),
+  hitsValue: $("#hitsValue"),
+  missesValue: $("#missesValue"),
+  streakValue: $("#streakValue"),
+  bestStreakValue: $("#bestStreakValue"),
+  reactionValue: $("#reactionValue"),
+  resultScore: $("#resultScore"),
+  resultAccuracy: $("#resultAccuracy"),
+  resultReaction: $("#resultReaction"),
+  reactionBars: $("#reactionBars"),
+  paceValue: $("#paceValue"),
+};
+
+const ctx = ui.canvas.getContext("2d");
 
 const state = {
-  mode: "flick",
+  mode: "precision",
+  duration: 45,
   running: false,
-  paused: false,
-  width: 0,
-  height: 0,
-  dpr: 1,
-  remainingMs: 45000,
-  lastFrame: 0,
   score: 0,
   hits: 0,
-  shots: 0,
+  misses: 0,
   streak: 0,
   bestStreak: 0,
   reactions: [],
   targets: [],
-  effects: [],
-  pointer: {
-    x: 0,
-    y: 0,
-    down: false,
-    inside: false,
-  },
-  tracking: {
-    firingMs: 0,
-    lockedMs: 0,
-    currentLockMs: 0,
-    bestLockMs: 0,
-  },
+  particles: [],
+  mouse: { x: 0, y: 0, active: false },
+  startedAt: 0,
+  endAt: 0,
+  lastFrameAt: 0,
+  raf: 0,
+  width: 0,
+  height: 0,
 };
 
-const palette = ["#33ddff", "#c7ff62", "#ff5d68", "#ffd166", "#b892ff"];
-
-function currentDurationMs() {
-  return Number(durationSelect.value) * 1000;
+function difficulty() {
+  return Number(ui.difficulty.value);
 }
 
-function currentRadius() {
-  return Number(sizeRange.value);
+function targetRadius() {
+  const mode = MODES[state.mode];
+  const ratio = (difficulty() - 1) / 9;
+  return Math.round(mode.radiusMax - (mode.radiusMax - mode.radiusMin) * ratio);
 }
 
-function currentSpeed() {
-  return Number(speedRange.value);
+function targetLife() {
+  const base = MODES[state.mode].life;
+  if (!base) return 0;
+  return Math.max(620, base - difficulty() * 58);
+}
+
+function targetCount() {
+  if (state.mode !== "burst") return MODES[state.mode].targetCount;
+  return MODES.burst.targetCount + Math.floor(difficulty() / 3);
 }
 
 function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  state.dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
-  state.width = Math.max(320, rect.width);
-  state.height = Math.max(240, rect.height);
-  canvas.width = Math.floor(state.width * state.dpr);
-  canvas.height = Math.floor(state.height * state.dpr);
-  ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
-  keepTargetsInBounds();
-  render();
+  const rect = ui.arena.getBoundingClientRect();
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  state.width = Math.floor(rect.width);
+  state.height = Math.floor(rect.height);
+  ui.canvas.width = Math.floor(rect.width * dpr);
+  ui.canvas.height = Math.floor(rect.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw(performance.now());
 }
 
-function randomBetween(min, max) {
-  return min + Math.random() * (max - min);
-}
+function randomTarget() {
+  const radius = targetRadius();
+  const padding = radius + 28;
+  let x = padding;
+  let y = padding;
 
-function createTarget(index = 0, moving = false) {
-  const radius = currentRadius() + (state.mode === "track" ? 8 : 0);
-  const margin = radius + 18;
-  const speed = (currentSpeed() * 48 + 80) / 1000;
-  const angle = randomBetween(0, Math.PI * 2);
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    x = randomBetween(padding, state.width - padding);
+    y = randomBetween(padding, state.height - padding);
+    const overlaps = state.targets.some((target) => {
+      return distance(x, y, target.x, target.y) < radius + target.r + 34;
+    });
+
+    if (!overlaps) break;
+  }
 
   return {
-    x: randomBetween(margin, Math.max(margin, state.width - margin)),
-    y: randomBetween(margin, Math.max(margin, state.height - margin)),
+    x,
+    y,
     r: radius,
-    color: palette[index % palette.length],
     createdAt: performance.now(),
-    lockedOnce: false,
-    vx: moving ? Math.cos(angle) * speed : 0,
-    vy: moving ? Math.sin(angle) * speed : 0,
+    life: targetLife(),
+    color: MODES[state.mode].color,
   };
 }
 
-function resetTargets() {
-  if (state.mode === "grid") {
-    state.targets = [createTarget(0), createTarget(1), createTarget(2)];
-    spreadGridTargets();
-    return;
-  }
-
-  state.targets = [createTarget(0, state.mode === "track")];
-}
-
-function spreadGridTargets() {
-  const minGap = currentRadius() * 2.7;
-
-  for (let pass = 0; pass < 18; pass += 1) {
-    for (let i = 0; i < state.targets.length; i += 1) {
-      for (let j = i + 1; j < state.targets.length; j += 1) {
-        const a = state.targets[i];
-        const b = state.targets[j];
-        if (distance(a.x, a.y, b.x, b.y) < minGap) {
-          state.targets[j] = createTarget(j);
-        }
-      }
-    }
+function ensureTargets() {
+  while (state.targets.length < targetCount()) {
+    state.targets.push(randomTarget());
   }
 }
 
-function keepTargetsInBounds() {
-  for (const target of state.targets) {
-    target.x = Math.min(Math.max(target.r, target.x), state.width - target.r);
-    target.y = Math.min(Math.max(target.r, target.y), state.height - target.r);
-  }
-}
-
-function startSession() {
+function startGame() {
+  resetStats();
   state.running = true;
-  state.paused = false;
-  state.remainingMs = currentDurationMs();
-  state.lastFrame = performance.now();
+  state.startedAt = performance.now();
+  state.endAt = state.startedAt + state.duration * 1000;
+  state.lastFrameAt = state.startedAt;
+  ui.overlay.classList.add("is-hidden");
+  ui.statePill.textContent = "진행";
+  ui.statePill.classList.add("status-pill--live");
+  ensureTargets();
+  cancelAnimationFrame(state.raf);
+  state.raf = requestAnimationFrame(loop);
+}
+
+function endGame() {
+  state.running = false;
+  state.targets = [];
+  ui.overlay.classList.remove("is-hidden");
+  ui.overlayTitle.textContent = "결과";
+  ui.overlayStart.textContent = "다시 시작";
+  ui.statePill.textContent = "완료";
+  ui.statePill.classList.remove("status-pill--live");
+  updateStats();
+  draw(performance.now());
+}
+
+function resetGame() {
+  cancelAnimationFrame(state.raf);
+  resetStats();
+  state.running = false;
+  state.targets = [];
+  state.particles = [];
+  ui.overlay.classList.remove("is-hidden");
+  ui.overlayTitle.textContent = "에임 테스트";
+  ui.overlayStart.textContent = "시작";
+  ui.statePill.textContent = "대기";
+  ui.statePill.classList.add("status-pill--live");
+  updateStats();
+  draw(performance.now());
+}
+
+function resetStats() {
   state.score = 0;
   state.hits = 0;
-  state.shots = 0;
+  state.misses = 0;
   state.streak = 0;
   state.bestStreak = 0;
   state.reactions = [];
-  state.effects = [];
-  state.tracking = {
-    firingMs: 0,
-    lockedMs: 0,
-    currentLockMs: 0,
-    bestLockMs: 0,
-  };
-  resultOverlay.classList.add("hidden");
-  resetTargets();
-  setControlsEnabled(false);
-  updateHud();
-  updateStatus();
-  requestAnimationFrame(loop);
+  state.targets = [];
+  state.particles = [];
 }
 
-function pauseSession() {
-  if (!state.running) {
+function loop(now) {
+  const remaining = state.endAt - now;
+  const dt = Math.min(40, now - state.lastFrameAt);
+  state.lastFrameAt = now;
+
+  if (remaining <= 0) {
+    endGame();
     return;
   }
 
-  state.paused = !state.paused;
-  state.lastFrame = performance.now();
-  updateStatus();
+  expireTargets(now);
+  updateParticles(dt);
+  ensureTargets();
+  updateStats(now);
+  draw(now);
+  state.raf = requestAnimationFrame(loop);
 }
 
-function resetSession() {
-  state.running = false;
-  state.paused = false;
-  state.pointer.down = false;
-  state.remainingMs = currentDurationMs();
-  state.score = 0;
-  state.hits = 0;
-  state.shots = 0;
-  state.streak = 0;
-  state.bestStreak = 0;
-  state.reactions = [];
-  state.effects = [];
-  state.tracking.currentLockMs = 0;
-  state.tracking.bestLockMs = 0;
-  resultOverlay.classList.add("hidden");
-  resetTargets();
-  setControlsEnabled(true);
-  updateHud();
-  updateStatus();
-  render();
-}
-
-function endSession() {
-  state.running = false;
-  state.paused = false;
-  state.pointer.down = false;
-  state.remainingMs = 0;
-  setControlsEnabled(true);
-  updateHud();
-  updateStatus();
-  finalScore.textContent = formatNumber(Math.round(state.score));
-  finalAccuracy.textContent = formatAccuracy();
-  finalReaction.textContent = formatReaction();
-  resultOverlay.classList.remove("hidden");
-}
-
-function setControlsEnabled(enabled) {
-  durationSelect.disabled = !enabled;
-  sizeRange.disabled = !enabled;
-  speedRange.disabled = !enabled;
-  modeButtons.forEach((button) => {
-    button.disabled = !enabled;
-  });
-}
-
-function loop(frameTime) {
-  if (!state.running) {
-    return;
-  }
-
-  const dt = Math.min(80, frameTime - state.lastFrame);
-  state.lastFrame = frameTime;
-
-  if (!state.paused) {
-    state.remainingMs = Math.max(0, state.remainingMs - dt);
-    updateMovingTargets(dt);
-    updateTracking(dt, frameTime);
-    updateEffects(dt);
-
-    if (state.remainingMs <= 0) {
-      endSession();
-      render();
-      return;
-    }
-  }
-
-  updateHud();
-  render();
-  requestAnimationFrame(loop);
-}
-
-function updateMovingTargets(dt) {
-  if (state.mode !== "track") {
-    return;
-  }
+function expireTargets(now) {
+  const keptTargets = [];
 
   for (const target of state.targets) {
-    target.x += target.vx * dt;
-    target.y += target.vy * dt;
-
-    if (target.x < target.r || target.x > state.width - target.r) {
-      target.vx *= -1;
-      target.x = Math.min(Math.max(target.r, target.x), state.width - target.r);
-    }
-
-    if (target.y < target.r || target.y > state.height - target.r) {
-      target.vy *= -1;
-      target.y = Math.min(Math.max(target.r, target.y), state.height - target.r);
+    const expired = target.life && now - target.createdAt > target.life;
+    if (expired) {
+      state.misses += 1;
+      state.streak = 0;
+      addMissPulse(target.x, target.y);
+    } else {
+      keptTargets.push(target);
     }
   }
+
+  state.targets = keptTargets;
 }
 
-function updateTracking(dt, frameTime) {
-  if (state.mode !== "track" || !state.pointer.down || state.paused) {
-    state.tracking.currentLockMs = 0;
-    return;
-  }
-
-  state.tracking.firingMs += dt;
-  state.shots = state.tracking.firingMs;
-
-  const target = state.targets[0];
-  const locked = target && isInsideTarget(target, state.pointer.x, state.pointer.y);
-
-  if (!locked) {
-    state.tracking.currentLockMs = 0;
-    return;
-  }
-
-  if (!target.lockedOnce) {
-    target.lockedOnce = true;
-    state.reactions.push(frameTime - target.createdAt);
-  }
-
-  state.tracking.lockedMs += dt;
-  state.tracking.currentLockMs += dt;
-  state.tracking.bestLockMs = Math.max(state.tracking.bestLockMs, state.tracking.currentLockMs);
-  state.hits = state.tracking.lockedMs;
-  state.bestStreak = Math.floor(state.tracking.bestLockMs / 100);
-  state.score += dt * (0.16 + currentSpeed() * 0.012);
-}
-
-function updateEffects(dt) {
-  state.effects = state.effects
-    .map((effect) => ({
-      ...effect,
-      age: effect.age + dt,
+function updateParticles(dt) {
+  const step = dt / 16.67;
+  state.particles = state.particles
+    .map((particle) => ({
+      ...particle,
+      x: particle.x + particle.vx * step,
+      y: particle.y + particle.vy * step,
+      life: particle.life - 0.035 * step,
     }))
-    .filter((effect) => effect.age < effect.life);
+    .filter((particle) => particle.life > 0);
 }
 
-function handleArenaPress(event) {
-  if (!state.running || state.paused) {
-    return;
-  }
+function handleShot(event) {
+  if (!state.running) return;
 
-  updatePointer(event);
-  state.pointer.down = true;
+  const point = canvasPoint(event);
+  state.mouse.x = point.x;
+  state.mouse.y = point.y;
+  state.mouse.active = true;
 
-  if (state.mode === "track") {
-    return;
-  }
-
-  state.shots += 1;
-  const hitIndex = state.targets.findIndex((target) => isInsideTarget(target, state.pointer.x, state.pointer.y));
+  const hitIndex = state.targets.findIndex((target) => {
+    return distance(point.x, point.y, target.x, target.y) <= target.r;
+  });
 
   if (hitIndex === -1) {
+    state.misses += 1;
     state.streak = 0;
-    state.score = Math.max(0, state.score - 15);
-    addEffect(state.pointer.x, state.pointer.y, "#ff5d68", false);
-    updateHud();
-    render();
+    state.score = Math.max(0, state.score - 6);
+    addMissPulse(point.x, point.y);
+    updateStats();
     return;
   }
 
-  registerHit(hitIndex);
-  updateHud();
-  render();
-}
-
-function registerHit(index) {
-  const target = state.targets[index];
+  const target = state.targets[hitIndex];
   const reaction = performance.now() - target.createdAt;
-  state.reactions.push(reaction);
+  state.targets.splice(hitIndex, 1);
   state.hits += 1;
   state.streak += 1;
   state.bestStreak = Math.max(state.bestStreak, state.streak);
-  state.score += Math.round(100 + Math.min(120, state.streak * 8) + Math.max(0, 120 - reaction / 3));
-  addEffect(target.x, target.y, target.color, true);
+  state.reactions.push(reaction);
+  state.score += scoreForHit(reaction);
+  addHitParticles(target);
+  ensureTargets();
+  updateStats();
+}
 
-  if (state.mode === "grid") {
-    state.targets[index] = createTarget(index);
-    spreadGridTargets();
-  } else {
-    state.targets = [createTarget(0)];
+function scoreForHit(reaction) {
+  const mode = MODES[state.mode];
+  const speedBonus = Math.max(0, Math.round(96 - reaction / 9));
+  const streakBonus = Math.min(90, state.streak * 6);
+  const difficultyBonus = difficulty() * 4;
+  return mode.baseScore + speedBonus + streakBonus + difficultyBonus;
+}
+
+function addHitParticles(target) {
+  for (let i = 0; i < 14; i += 1) {
+    const angle = (Math.PI * 2 * i) / 14;
+    const speed = randomBetween(2.4, 6.2);
+    state.particles.push({
+      x: target.x,
+      y: target.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      color: target.color,
+      size: randomBetween(2, 5),
+    });
   }
 }
 
-function addEffect(x, y, color, hit) {
-  state.effects.push({
+function addMissPulse(x, y) {
+  state.particles.push({
     x,
     y,
-    color,
-    hit,
-    age: 0,
-    life: hit ? 420 : 300,
+    vx: 0,
+    vy: 0,
+    life: 0.9,
+    color: "#ff6a4d",
+    size: 18,
+    miss: true,
   });
 }
 
-function updatePointer(event) {
-  const rect = canvas.getBoundingClientRect();
-  state.pointer.x = event.clientX - rect.left;
-  state.pointer.y = event.clientY - rect.top;
-  state.pointer.inside =
-    state.pointer.x >= 0 &&
-    state.pointer.y >= 0 &&
-    state.pointer.x <= rect.width &&
-    state.pointer.y <= rect.height;
+function updateStats(now = performance.now()) {
+  const attempts = state.hits + state.misses;
+  const accuracy = attempts ? Math.round((state.hits / attempts) * 100) : 0;
+  const avgReaction = average(state.reactions);
+  const elapsed = state.running ? Math.max(1, (now - state.startedAt) / 1000) : state.duration;
+  const pace = Math.round((state.hits / elapsed) * 60);
+  const remaining = state.running ? Math.max(0, (state.endAt - now) / 1000) : state.duration;
+  const progress = state.running ? remaining / state.duration : 1;
+
+  ui.timeValue.textContent = remaining.toFixed(1);
+  ui.timerFill.style.transform = `scaleX(${progress})`;
+  ui.scoreValue.textContent = state.score.toLocaleString("ko-KR");
+  ui.accuracyValue.textContent = `${accuracy}%`;
+  ui.hitsValue.textContent = state.hits;
+  ui.missesValue.textContent = state.misses;
+  ui.streakValue.textContent = state.streak;
+  ui.bestStreakValue.textContent = state.bestStreak;
+  ui.reactionValue.textContent = `${Math.round(avgReaction)}ms`;
+  ui.resultScore.textContent = state.score.toLocaleString("ko-KR");
+  ui.resultAccuracy.textContent = `${accuracy}%`;
+  ui.resultReaction.textContent = `${Math.round(avgReaction)}ms`;
+  ui.paceValue.textContent = `${pace}/min`;
+  renderReactionBars();
+}
+
+function renderReactionBars() {
+  const recent = state.reactions.slice(-12);
+  ui.reactionBars.innerHTML = "";
+
+  for (let i = 0; i < 12; i += 1) {
+    const reaction = recent[i] || 0;
+    const bar = document.createElement("span");
+    const normalized = reaction ? Math.max(0.14, Math.min(1, 1 - reaction / 1200)) : 0.1;
+    bar.style.height = `${Math.round(18 + normalized * 86)}px`;
+    bar.style.opacity = reaction ? "1" : "0.22";
+    ui.reactionBars.appendChild(bar);
+  }
+}
+
+function draw(now) {
+  ctx.clearRect(0, 0, state.width, state.height);
+  drawGridMarks();
+  state.targets.forEach((target) => drawTarget(target, now));
+  state.particles.forEach(drawParticle);
+  if (state.mouse.active) drawCrosshair(state.mouse.x, state.mouse.y);
+}
+
+function drawGridMarks() {
+  ctx.save();
+  ctx.strokeStyle = "rgba(244, 247, 242, 0.055)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(state.width / 2, 0);
+  ctx.lineTo(state.width / 2, state.height);
+  ctx.moveTo(0, state.height / 2);
+  ctx.lineTo(state.width, state.height / 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTarget(target, now) {
+  const pulse = Math.sin(now / 110) * 1.5;
+
+  ctx.save();
+  ctx.shadowColor = target.color;
+  ctx.shadowBlur = 22;
+  ctx.fillStyle = target.color;
+  ctx.beginPath();
+  ctx.arc(target.x, target.y, target.r + pulse, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.76)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(target.x, target.y, target.r * 0.54, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(17, 19, 19, 0.72)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(target.x - target.r * 0.34, target.y);
+  ctx.lineTo(target.x + target.r * 0.34, target.y);
+  ctx.moveTo(target.x, target.y - target.r * 0.34);
+  ctx.lineTo(target.x, target.y + target.r * 0.34);
+  ctx.stroke();
+
+  if (target.life) {
+    const lifeLeft = Math.max(0, 1 - (now - target.createdAt) / target.life);
+    ctx.strokeStyle = "#ffd166";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, target.r + 9, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * lifeLeft);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawParticle(particle) {
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, particle.life);
+
+  if (particle.miss) {
+    ctx.strokeStyle = particle.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(particle.x, particle.y, particle.size * (1.4 - particle.life), 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = particle.color;
+    ctx.beginPath();
+    ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawCrosshair(x, y) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(244, 247, 242, 0.92)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y);
+  ctx.lineTo(x - 4, y);
+  ctx.moveTo(x + 4, y);
+  ctx.lineTo(x + 12, y);
+  ctx.moveTo(x, y - 12);
+  ctx.lineTo(x, y - 4);
+  ctx.moveTo(x, y + 4);
+  ctx.lineTo(x, y + 12);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function canvasPoint(event) {
+  const rect = ui.canvas.getBoundingClientRect();
+  return {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  const modeConfig = MODES[mode];
+  ui.modePill.textContent = modeConfig.label;
+  ui.arenaTitle.textContent = modeConfig.title;
+  $$(".segment").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.mode === mode);
+  });
+  resetGame();
+}
+
+function setDuration(duration) {
+  state.duration = Number(duration);
+  $$(".chip").forEach((button) => {
+    button.classList.toggle("is-active", Number(button.dataset.duration) === state.duration);
+  });
+  resetGame();
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function randomBetween(min, max) {
+  if (max <= min) return min;
+  return Math.random() * (max - min) + min;
 }
 
 function distance(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
 }
 
-function isInsideTarget(target, x, y) {
-  return distance(target.x, target.y, x, y) <= target.r;
-}
-
-function drawBackground() {
-  ctx.clearRect(0, 0, state.width, state.height);
-
-  const gridSize = 42;
-  ctx.save();
-  ctx.globalAlpha = 0.14;
-  ctx.strokeStyle = "#5a5647";
-  ctx.lineWidth = 1;
-
-  for (let x = 0; x <= state.width; x += gridSize) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, state.height);
-    ctx.stroke();
-  }
-
-  for (let y = 0; y <= state.height; y += gridSize) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(state.width, y);
-    ctx.stroke();
-  }
-
-  ctx.restore();
-
-  const gradient = ctx.createRadialGradient(
-    state.width * 0.5,
-    state.height * 0.48,
-    20,
-    state.width * 0.5,
-    state.height * 0.48,
-    Math.max(state.width, state.height) * 0.74,
-  );
-  gradient.addColorStop(0, "rgba(255,255,255,0.04)");
-  gradient.addColorStop(1, "rgba(0,0,0,0.34)");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, state.width, state.height);
-}
-
-function drawTarget(target, index) {
-  const pulse = state.running ? Math.sin(performance.now() / 120 + index) * 2 : 0;
-  const radius = target.r + pulse;
-
-  ctx.save();
-  ctx.shadowColor = target.color;
-  ctx.shadowBlur = 24;
-  ctx.fillStyle = target.color;
-  ctx.beginPath();
-  ctx.arc(target.x, target.y, radius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "rgba(17, 17, 15, 0.82)";
-  ctx.lineWidth = Math.max(4, radius * 0.14);
-  ctx.beginPath();
-  ctx.arc(target.x, target.y, radius * 0.62, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(245, 242, 232, 0.88)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(target.x - radius * 0.36, target.y);
-  ctx.lineTo(target.x + radius * 0.36, target.y);
-  ctx.moveTo(target.x, target.y - radius * 0.36);
-  ctx.lineTo(target.x, target.y + radius * 0.36);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawEffects() {
-  for (const effect of state.effects) {
-    const progress = effect.age / effect.life;
-    const radius = effect.hit ? 22 + progress * 44 : 12 + progress * 28;
-
-    ctx.save();
-    ctx.globalAlpha = 1 - progress;
-    ctx.strokeStyle = effect.color;
-    ctx.lineWidth = effect.hit ? 4 : 2;
-    ctx.beginPath();
-    ctx.arc(effect.x, effect.y, radius, 0, Math.PI * 2);
-    ctx.stroke();
-
-    if (effect.hit) {
-      ctx.fillStyle = effect.color;
-      ctx.globalAlpha = (1 - progress) * 0.3;
-      ctx.beginPath();
-      ctx.arc(effect.x, effect.y, radius * 0.38, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.restore();
-  }
-}
-
-function drawPointer() {
-  if (!state.pointer.inside) {
-    return;
-  }
-
-  const size = state.mode === "track" && state.pointer.down ? 14 : 10;
-  ctx.save();
-  ctx.strokeStyle = state.pointer.down ? "#c7ff62" : "rgba(245, 242, 232, 0.76)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(state.pointer.x - size, state.pointer.y);
-  ctx.lineTo(state.pointer.x - 3, state.pointer.y);
-  ctx.moveTo(state.pointer.x + 3, state.pointer.y);
-  ctx.lineTo(state.pointer.x + size, state.pointer.y);
-  ctx.moveTo(state.pointer.x, state.pointer.y - size);
-  ctx.lineTo(state.pointer.x, state.pointer.y - 3);
-  ctx.moveTo(state.pointer.x, state.pointer.y + 3);
-  ctx.lineTo(state.pointer.x, state.pointer.y + size);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawIdleState() {
-  if (state.running) {
-    return;
-  }
-
-  ctx.save();
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(245, 242, 232, 0.84)";
-  ctx.font = "900 52px Inter, system-ui, sans-serif";
-  ctx.fillText("READY", state.width / 2, state.height / 2 - 22);
-  ctx.fillStyle = "rgba(170, 164, 147, 0.72)";
-  ctx.font = "800 15px Inter, system-ui, sans-serif";
-  ctx.fillText(`${state.mode.toUpperCase()} · ${currentDurationMs() / 1000}s`, state.width / 2, state.height / 2 + 26);
-  ctx.restore();
-}
-
-function render() {
-  drawBackground();
-  state.targets.forEach(drawTarget);
-  drawEffects();
-  drawPointer();
-  drawIdleState();
-}
-
-function updateHud() {
-  scoreValue.textContent = formatNumber(Math.round(state.score));
-  accuracyValue.textContent = formatAccuracy();
-  reactionValue.textContent = formatReaction();
-  streakValue.textContent = state.mode === "track" ? String(Math.floor(state.tracking.bestLockMs / 100)) : String(state.bestStreak);
-  timerValue.textContent = (state.remainingMs / 1000).toFixed(1);
-}
-
-function updateStatus() {
-  statusDot.classList.toggle("live", state.running && !state.paused);
-  statusDot.classList.toggle("paused", state.running && state.paused);
-  statusText.textContent = state.running ? (state.paused ? "일시정지" : "진행 중") : "준비";
-  startButton.textContent = state.running ? (state.paused ? "재개" : "일시정지") : "시작";
-}
-
-function formatAccuracy() {
-  if (state.shots <= 0) {
-    return "0%";
-  }
-
-  return `${Math.round((state.hits / state.shots) * 100)}%`;
-}
-
-function formatReaction() {
-  if (state.reactions.length === 0) {
-    return "0ms";
-  }
-
-  const total = state.reactions.reduce((sum, value) => sum + value, 0);
-  return `${Math.round(total / state.reactions.length)}ms`;
-}
-
-function formatNumber(value) {
-  return new Intl.NumberFormat("ko-KR").format(value);
-}
-
-modeButtons.forEach((button) => {
-  button.addEventListener("click", () => {
-    state.mode = button.dataset.mode;
-    modeButtons.forEach((item) => {
-      const active = item === button;
-      item.classList.toggle("active", active);
-      item.setAttribute("aria-selected", String(active));
-    });
-    resetSession();
-  });
+ui.canvas.addEventListener("pointerdown", handleShot);
+ui.canvas.addEventListener("pointermove", (event) => {
+  const point = canvasPoint(event);
+  state.mouse.x = point.x;
+  state.mouse.y = point.y;
+  state.mouse.active = true;
+});
+ui.canvas.addEventListener("pointerleave", () => {
+  state.mouse.active = false;
 });
 
-startButton.addEventListener("click", () => {
-  if (!state.running) {
-    startSession();
-    return;
-  }
+ui.startBtn.addEventListener("click", startGame);
+ui.overlayStart.addEventListener("click", startGame);
+ui.resetBtn.addEventListener("click", resetGame);
 
-  pauseSession();
+$$(".segment").forEach((button) => {
+  button.addEventListener("click", () => setMode(button.dataset.mode));
 });
 
-resetButton.addEventListener("click", resetSession);
-againButton.addEventListener("click", startSession);
-
-durationSelect.addEventListener("change", resetSession);
-sizeRange.addEventListener("input", resetSession);
-speedRange.addEventListener("input", resetSession);
-
-canvas.addEventListener("pointerdown", handleArenaPress);
-canvas.addEventListener("pointermove", (event) => {
-  updatePointer(event);
-});
-canvas.addEventListener("pointerup", () => {
-  state.pointer.down = false;
-});
-canvas.addEventListener("pointerleave", () => {
-  state.pointer.down = false;
-  state.pointer.inside = false;
+$$(".chip").forEach((button) => {
+  button.addEventListener("click", () => setDuration(button.dataset.duration));
 });
 
-window.addEventListener("keydown", (event) => {
-  if (event.code === "Space") {
-    event.preventDefault();
-    if (state.running) {
-      pauseSession();
-    } else {
-      startSession();
-    }
-  }
+ui.difficulty.addEventListener("input", () => {
+  ui.difficultyValue.textContent = ui.difficulty.value;
+  resetGame();
 });
 
-new ResizeObserver(resizeCanvas).observe(canvas);
-resetSession();
+window.addEventListener("resize", resizeCanvas);
+
+resizeCanvas();
+updateStats();
+renderReactionBars();

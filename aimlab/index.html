@@ -1,110 +1,134 @@
 <!doctype html>
 <html lang="ko">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Aim Lab Web Test</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aimtune | Web Aim Test</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
   </head>
   <body>
-    <main class="app-shell">
-      <aside class="control-panel" aria-label="에임 테스트 설정">
-        <div class="brand-block">
-          <p class="eyebrow">Aim Test</p>
-          <h1>에임 체크</h1>
+    <main class="shell">
+      <header class="topbar" aria-label="게임 상태">
+        <div>
+          <p class="eyebrow">Aimtune</p>
+          <h1>에임 테스트</h1>
         </div>
+        <div class="topbar__status">
+          <span id="modePill" class="status-pill">정밀</span>
+          <span id="statePill" class="status-pill status-pill--live">대기</span>
+        </div>
+      </header>
 
-        <section class="panel-section" aria-labelledby="mode-label">
-          <h2 id="mode-label">모드</h2>
-          <div class="segmented-control" role="tablist" aria-label="훈련 모드">
-            <button class="mode-button active" type="button" data-mode="flick" role="tab" aria-selected="true">Flick</button>
-            <button class="mode-button" type="button" data-mode="grid" role="tab" aria-selected="false">Grid</button>
-            <button class="mode-button" type="button" data-mode="track" role="tab" aria-selected="false">Track</button>
+      <aside class="panel controls" aria-label="테스트 설정">
+        <section class="control-block">
+          <h2>모드</h2>
+          <div class="segmented" role="tablist" aria-label="모드 선택">
+            <button class="segment is-active" type="button" data-mode="precision">정밀</button>
+            <button class="segment" type="button" data-mode="burst">스피드</button>
+            <button class="segment" type="button" data-mode="reflex">반응</button>
           </div>
         </section>
 
-        <section class="panel-section settings-grid" aria-label="세부 설정">
-          <label>
-            <span>시간</span>
-            <select id="durationSelect">
-              <option value="30">30초</option>
-              <option value="45" selected>45초</option>
-              <option value="60">60초</option>
-              <option value="90">90초</option>
-            </select>
-          </label>
-
-          <label>
-            <span>타겟 크기</span>
-            <input id="sizeRange" type="range" min="18" max="52" value="34" />
-          </label>
-
-          <label>
-            <span>속도</span>
-            <input id="speedRange" type="range" min="1" max="8" value="4" />
-          </label>
+        <section class="control-block">
+          <h2>시간</h2>
+          <div class="duration-set" aria-label="테스트 시간">
+            <button class="chip" type="button" data-duration="30">30초</button>
+            <button class="chip is-active" type="button" data-duration="45">45초</button>
+            <button class="chip" type="button" data-duration="60">60초</button>
+          </div>
         </section>
 
-        <section class="action-row" aria-label="게임 제어">
-          <button id="startButton" class="primary-action" type="button">시작</button>
-          <button id="resetButton" class="ghost-action" type="button">리셋</button>
+        <section class="control-block">
+          <div class="label-row">
+            <h2>난이도</h2>
+            <output id="difficultyValue" for="difficulty">5</output>
+          </div>
+          <input id="difficulty" type="range" min="1" max="10" value="5" />
         </section>
 
-        <section class="stat-grid" aria-label="현재 기록">
-          <article class="stat-tile">
-            <span>점수</span>
-            <strong id="scoreValue">0</strong>
-          </article>
-          <article class="stat-tile">
-            <span>정확도</span>
-            <strong id="accuracyValue">0%</strong>
-          </article>
-          <article class="stat-tile">
-            <span>평균 반응</span>
-            <strong id="reactionValue">0ms</strong>
-          </article>
-          <article class="stat-tile">
-            <span>최고 연속</span>
-            <strong id="streakValue">0</strong>
-          </article>
+        <section class="control-block">
+          <button id="startBtn" class="primary-action" type="button">테스트 시작</button>
+          <button id="resetBtn" class="secondary-action" type="button">초기화</button>
         </section>
       </aside>
 
-      <section class="arena-shell" aria-label="에임 테스트 플레이 영역">
-        <div class="arena-topbar">
+      <section class="arena-shell" aria-label="에임 테스트 경기장">
+        <div class="arena-header">
           <div>
-            <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">준비</span>
+            <p class="eyebrow">현재 테스트</p>
+            <h2 id="arenaTitle">정밀 조준</h2>
           </div>
-          <time id="timerValue" aria-label="남은 시간">45.0</time>
+          <strong id="timeValue" class="time-value">45.0</strong>
         </div>
-
-        <canvas id="aimCanvas" aria-label="에임 테스트 캔버스"></canvas>
-
-        <div id="resultOverlay" class="result-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="resultTitle">
-          <div class="result-panel">
-            <p class="eyebrow">Result</p>
-            <h2 id="resultTitle">세션 완료</h2>
-            <dl class="result-list">
+        <div class="timer-track" aria-hidden="true">
+          <span id="timerFill"></span>
+        </div>
+        <div id="arena" class="arena">
+          <canvas id="aimCanvas" aria-label="클릭 타겟 영역"></canvas>
+          <div id="screenOverlay" class="screen-overlay">
+            <p class="eyebrow">Ready</p>
+            <h2 id="overlayTitle">에임 테스트</h2>
+            <div class="result-grid" aria-label="결과 요약">
               <div>
-                <dt>점수</dt>
-                <dd id="finalScore">0</dd>
+                <span>점수</span>
+                <strong id="resultScore">0</strong>
               </div>
               <div>
-                <dt>정확도</dt>
-                <dd id="finalAccuracy">0%</dd>
+                <span>정확도</span>
+                <strong id="resultAccuracy">0%</strong>
               </div>
               <div>
-                <dt>평균 반응</dt>
-                <dd id="finalReaction">0ms</dd>
+                <span>평균 반응</span>
+                <strong id="resultReaction">0ms</strong>
               </div>
-            </dl>
-            <button id="againButton" class="primary-action" type="button">다시 시작</button>
+            </div>
+            <button id="overlayStart" class="primary-action" type="button">시작</button>
           </div>
         </div>
       </section>
-    </main>
 
-    <script src="app.js"></script>
+      <aside class="panel stats" aria-label="실시간 기록">
+        <section class="score-card">
+          <span>점수</span>
+          <strong id="scoreValue">0</strong>
+        </section>
+
+        <section class="metric-grid">
+          <article class="metric">
+            <span>정확도</span>
+            <strong id="accuracyValue">0%</strong>
+          </article>
+          <article class="metric">
+            <span>명중</span>
+            <strong id="hitsValue">0</strong>
+          </article>
+          <article class="metric">
+            <span>실패</span>
+            <strong id="missesValue">0</strong>
+          </article>
+          <article class="metric">
+            <span>연속</span>
+            <strong id="streakValue">0</strong>
+          </article>
+          <article class="metric">
+            <span>최고 연속</span>
+            <strong id="bestStreakValue">0</strong>
+          </article>
+          <article class="metric">
+            <span>평균 반응</span>
+            <strong id="reactionValue">0ms</strong>
+          </article>
+        </section>
+
+        <section class="history" aria-label="최근 명중 반응">
+          <div class="label-row">
+            <h2>최근 반응</h2>
+            <span id="paceValue">0/min</span>
+          </div>
+          <div id="reactionBars" class="reaction-bars"></div>
+        </section>
+      </aside>
+    </main>
   </body>
 </html>
