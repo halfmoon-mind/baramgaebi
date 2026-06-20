@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>바람개비 퀴즈</title>
+<style>
+  :root { --bg:#0f1020; --card:#1b1c34; --line:#2c2e52; --fg:#eef; --muted:#9aa; --accent:#6c5ce7; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Apple SD Gothic Neo",sans-serif;
+         background:var(--bg); color:var(--fg); min-height:100vh; }
+  #app { max-width:760px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:1.4rem; margin:.2em 0 1em; }
+  h2 { margin:0 0 .6em; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin:12px 0; }
+  button { font:inherit; cursor:pointer; border:none; border-radius:10px; padding:12px 16px;
+           background:var(--accent); color:#fff; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:default; }
+  input { font:inherit; padding:11px 12px; border-radius:10px; border:1px solid var(--line);
+          background:#0d0e1d; color:var(--fg); width:100%; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:10px 0 4px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .grow { flex:1; }
+  .muted { color:var(--muted); }
+  .code { font-size:2rem; letter-spacing:.3em; font-weight:700; text-align:center; padding:10px;
+          background:#0d0e1d; border-radius:12px; }
+  .pill { background:#0d0e1d; border:1px solid var(--line); border-radius:999px; padding:6px 12px; font-size:.9rem; }
+  .opts { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+  .opt { padding:18px; border-radius:12px; color:#fff; font-weight:600; text-align:left; min-height:64px; }
+  .opt:nth-child(1){ background:#e74c3c; } .opt:nth-child(2){ background:#2980b9; }
+  .opt:nth-child(3){ background:#f39c12; } .opt:nth-child(4){ background:#27ae60; }
+  .opt.dim { opacity:.35; } .opt.right { outline:4px solid #fff; }
+  .timer { font-size:1.5rem; font-weight:700; text-align:center; }
+  .lb { display:flex; justify-content:space-between; padding:10px 4px; border-bottom:1px solid var(--line); }
+  .qlist .lb { align-items:flex-start; }
+  .err { color:#ff7675; min-height:1.2em; font-size:.9rem; }
+  a { color:#a99cff; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+import { joinRoom } from 'https://esm.sh/trystero@0.25.2/nostr'
+// ponytail: pinned to a known-good version; bump deliberately, not via "latest".
+
+const APP_ID = 'baramgaebi-quiz'
+const QUESTION_MS = 20000
+const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no ambiguous 0/O/1/I
+const $ = (id) => document.getElementById(id)
+const el = (sel='div', html='') => { const e = document.createElement(sel); e.innerHTML = html; return e }
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+const randCode = () => Array.from({length:4}, () => ALPHABET[Math.floor(Math.random()*ALPHABET.length)]).join('')
+
+let room, sendState, sendJoin, sendAnswer
+let role = null
+
+// ---------- HOST ----------
+const host = {
+  quiz: [],            // {text, options:[..], correct}
+  players: new Map(),  // peerId -> {name, score}
+  phase: 'lobby',      // lobby | question | reveal | final
+  q: 0,                // current question index
+  answers: new Map(),  // peerId -> {choice, t}  (this question only)
+  timer: null,
+}
+
+function hostState() {
+  // What every player sees. Correct answer is omitted until reveal (anti-peek).
+  const roster = [...host.players.values()].sort((a,b)=>b.score-a.score)
+  const base = { phase: host.phase, roster }
+  if (host.phase === 'question') {
+    const q = host.quiz[host.q]
+    base.q = { idx: host.q, total: host.quiz.length, text: q.text, options: q.options, duration: QUESTION_MS }
+    base.answered = host.answers.size
+  } else if (host.phase === 'reveal') {
+    base.correctIdx = host.quiz[host.q].correct
+    base.qText = host.quiz[host.q].text
+    base.options = host.quiz[host.q].options
+  }
+  return base
+}
+// trystero 0.25: no-arg send() does not fan out reliably — target each known peer (string id) explicitly.
+function broadcast() {
+  for (const pid of host.players.keys()) sendState(hostState(), pid)
+}
+
+function startQuestion() {
+  host.phase = 'question'
+  host.answers = new Map()
+  host.qStart = performance.now()   // host-authoritative clock for scoring
+  broadcast()
+  clearTimeout(host.timer)
+  host.timer = setTimeout(reveal, QUESTION_MS)
+  renderHost()
+}
+
+function reveal() {
+  clearTimeout(host.timer)
+  const correct = host.quiz[host.q].correct
+  const deadline = QUESTION_MS
+  for (const [pid, a] of host.answers) {
+    if (a.choice === correct) {
+      const remaining = Math.max(0, deadline - a.t)        // host-stamped time, cheat-resistant
+      const bonus = Math.round(500 * remaining / deadline)
+      const p = host.players.get(pid)
+      if (p) p.score += 500 + bonus
+    }
+  }
+  host.phase = 'reveal'
+  broadcast()
+  renderHost()
+}
+
+function nextQuestion() {
+  if (host.q + 1 < host.quiz.length) { host.q++; startQuestion() }
+  else { host.phase = 'final'; broadcast(); renderHost() }
+}
+
+function createRoom() {
+  role = 'host'
+  const code = randCode()
+  room = joinRoom({ appId: APP_ID }, code)
+  room.code = code
+
+  // trystero 0.25: makeAction() -> { send, onMessage(assignable), onReceiveProgress }
+  sendState = room.makeAction('state').send
+
+  room.makeAction('join').onMessage = (data, { peerId }) => {   // onMessage sender arg is { peerId }, not a string
+    const name = (data?.name || '익명').toString().slice(0, 20)
+    if (!host.players.has(peerId)) host.players.set(peerId, { name, score: 0 })
+    broadcast()                   // fans out to every peer incl. the newcomer
+    renderHost()
+  }
+  room.makeAction('answer').onMessage = (data, { peerId }) => {
+    if (host.phase !== 'question' || host.answers.has(peerId)) return
+    const t = Math.min(QUESTION_MS, Math.max(0, performance.now() - host.qStart))
+    host.answers.set(peerId, { choice: data?.choice, t })
+    broadcast()
+    renderHost()
+    if (host.answers.size >= host.players.size && host.players.size > 0) reveal()
+  }
+  room.onPeerLeave = (pid) => {
+    host.players.delete(pid); host.answers.delete(pid); broadcast(); renderHost()
+  }
+  renderHost()
+}
+
+// ---------- PLAYER ----------
+const player = { state: null, hostId: null, myChoice: null, name: '', lastQIdx: -1, qStart: 0 }
+
+function joinAs(code, name) {
+  role = 'player'
+  player.name = name
+  room = joinRoom({ appId: APP_ID }, code.toUpperCase())
+  room.code = code.toUpperCase()
+
+  sendAnswer = room.makeAction('answer').send
+  sendJoin = room.makeAction('join').send
+  room.makeAction('state').onMessage = (data, { peerId }) => {
+    if (player.hostId && peerId !== player.hostId) return  // lock onto first host; ignore impostors
+    player.hostId = peerId
+    if (data.phase === 'question' && data.q?.idx !== player.lastQIdx) {
+      player.lastQIdx = data.q.idx; player.myChoice = null; player.qStart = performance.now()
+    }
+    player.state = data
+    renderPlayer()
+  }
+  room.onPeerJoin = () => sendJoin({ name })   // announce once the host connects
+  renderPlayer()
+}
+
+function submitAnswer(choice) {
+  if (player.myChoice !== null || !player.hostId) return
+  player.myChoice = choice
+  sendAnswer({ choice }, player.hostId)
+  renderPlayer()
+}
+
+// ================= RENDER =================
+const app = $('app')
+
+function renderHome() {
+  role = null
+  const urlRoom = new URLSearchParams(location.search).get('room')
+  app.innerHTML = `
+    <h1>🎡 바람개비 퀴즈</h1>
+    <div class="card">
+      <h2>퀴즈 만들기 (호스트)</h2>
+      <p class="muted">문제를 만들고 방을 열어 코드를 공유하세요.</p>
+      <button id="go-host">새 퀴즈 만들기</button>
+    </div>
+    <div class="card">
+      <h2>참여하기</h2>
+      <label>방 코드</label>
+      <input id="join-code" maxlength="4" placeholder="ABCD" value="${esc(urlRoom||'')}" style="text-transform:uppercase">
+      <label>이름</label>
+      <input id="join-name" maxlength="20" placeholder="홍길동">
+      <div class="err" id="join-err"></div>
+      <button id="go-join">입장</button>
+    </div>`
+  $('go-host').onclick = () => renderBuilder()
+  $('go-join').onclick = () => {
+    const code = $('join-code').value.trim().toUpperCase()
+    const name = $('join-name').value.trim()
+    if (code.length !== 4) return $('join-err').textContent = '방 코드 4자리를 입력하세요.'
+    if (!name) return $('join-err').textContent = '이름을 입력하세요.'
+    joinAs(code, name)
+  }
+  if (urlRoom) $('join-name').focus()
+}
+
+function renderBuilder() {
+  const draft = host.quiz
+  app.innerHTML = `
+    <h1>🎡 퀴즈 편집</h1>
+    <div id="qlist"></div>
+    <div class="card">
+      <button id="add-q" class="ghost">+ 문제 추가</button>
+    </div>
+    <div class="row">
+      <button id="open-room" class="grow">방 열기 (${draft.length}문제)</button>
+      <button id="back" class="ghost">뒤로</button>
+    </div>
+    <p class="err" id="b-err"></p>`
+  const list = $('qlist')
+  draft.forEach((q, i) => list.appendChild(qEditor(q, i)))
+  $('add-q').onclick = () => { draft.push({ text:'', options:['',''], correct:0 }); renderBuilder() }
+  $('back').onclick = renderHome
+  $('open-room').onclick = () => {
+    if (!draft.length) return $('b-err').textContent = '문제를 1개 이상 추가하세요.'
+    for (const q of draft) {
+      if (!q.text.trim()) return $('b-err').textContent = '빈 문제가 있습니다.'
+      if (q.options.filter(o=>o.trim()).length < 2) return $('b-err').textContent = '각 문제는 보기 2개 이상 필요합니다.'
+      if (!q.options[q.correct]?.trim()) return $('b-err').textContent = '정답으로 표시한 보기가 비어있습니다.'
+    }
+    draft.forEach(q => {                       // strip blanks, keep the correct option pointing at the same value
+      const correctVal = q.options[q.correct]
+      q.options = q.options.filter(o=>o.trim())
+      q.correct = q.options.indexOf(correctVal)
+    })
+    createRoom()
+  }
+}
+
+function qEditor(q, i) {
+  const c = el('div'); c.className = 'card'
+  c.innerHTML = `<div class="row"><h2 class="grow">문제 ${i+1}</h2><button class="ghost del">삭제</button></div>
+    <label>질문</label><input class="qt" value="${esc(q.text)}" placeholder="질문을 입력">
+    <label>보기 (정답을 클릭해 선택)</label><div class="opts2"></div>
+    <button class="ghost addopt" style="margin-top:8px">+ 보기 추가</button>`
+  const opts = c.querySelector('.opts2')
+  q.options.forEach((opt, j) => {
+    const r = el('div'); r.className = 'row'; r.style.marginTop = '6px'
+    r.innerHTML = `<button class="mark ${q.correct===j?'':'ghost'}" title="정답">${q.correct===j?'✓ 정답':'정답'}</button>
+                   <input class="grow oi" value="${esc(opt)}" placeholder="보기 ${j+1}">`
+    r.querySelector('.mark').onclick = () => { q.correct = j; renderBuilder() }
+    r.querySelector('.oi').oninput = (e) => q.options[j] = e.target.value
+    opts.appendChild(r)
+  })
+  c.querySelector('.qt').oninput = (e) => q.text = e.target.value
+  c.querySelector('.del').onclick = () => { host.quiz.splice(i,1); renderBuilder() }
+  c.querySelector('.addopt').onclick = () => { if (q.options.length<4){ q.options.push(''); renderBuilder() } }
+  return c
+}
+
+function renderHost() {
+  if (role !== 'host') return
+  const link = `${location.origin}${location.pathname}?room=${room.code}`
+  const roster = [...host.players.values()].sort((a,b)=>b.score-a.score)
+  let body = ''
+  if (host.phase === 'lobby') {
+    body = `<div class="card">
+        <div class="muted">방 코드</div><div class="code">${room.code}</div>
+        <label>공유 링크</label><input readonly value="${esc(link)}" onclick="this.select()">
+      </div>
+      <div class="card">
+        <h2>참가자 (${roster.length})</h2>
+        ${roster.map(p=>`<div class="lb"><span>${esc(p.name)}</span></div>`).join('') || '<p class="muted">아직 없음…</p>'}
+        <button id="start" ${roster.length?'':'disabled'} style="margin-top:12px">시작하기</button>
+      </div>`
+  } else if (host.phase === 'question') {
+    const q = host.quiz[host.q]
+    body = `<div class="card">
+        <div class="muted">문제 ${host.q+1} / ${host.quiz.length}</div>
+        <h2>${esc(q.text)}</h2>
+        <div class="opts">${q.options.map((o,i)=>`<div class="opt">${esc(o)}</div>`).join('')}</div>
+        <p class="muted" style="margin-top:14px">응답 ${host.answers.size} / ${host.players.size}</p>
+        <button id="skip" class="ghost">바로 공개</button>
+      </div>`
+  } else if (host.phase === 'reveal') {
+    const q = host.quiz[host.q]
+    body = `<div class="card">
+        <h2>${esc(q.text)}</h2>
+        <div class="opts">${q.options.map((o,i)=>`<div class="opt ${i===q.correct?'right':'dim'}">${esc(o)}</div>`).join('')}</div>
+      </div>
+      <div class="card"><h2>순위</h2>${rosterRows(roster)}
+        <button id="next" style="margin-top:12px">${host.q+1<host.quiz.length?'다음 문제':'결과 보기'}</button>
+      </div>`
+  } else { // final
+    body = `<div class="card"><h2>🏆 최종 순위</h2>${rosterRows(roster)}
+      <button id="again" class="ghost" style="margin-top:12px">처음으로</button></div>`
+  }
+  app.innerHTML = `<h1>🎡 호스트</h1>${body}`
+  if ($('start')) $('start').onclick = () => { host.q = 0; startQuestion() }
+  if ($('skip')) $('skip').onclick = reveal
+  if ($('next')) $('next').onclick = nextQuestion
+  if ($('again')) $('again').onclick = () => location.reload()
+}
+
+function rosterRows(roster) {
+  if (!roster.length) return '<p class="muted">참가자 없음</p>'
+  return roster.map((p,i)=>`<div class="lb"><span>${['🥇','🥈','🥉'][i]||(i+1+'.')} ${esc(p.name)}</span><b>${p.score}</b></div>`).join('')
+}
+
+function renderPlayer() {
+  if (role !== 'player') return
+  const s = player.state
+  if (!s) { app.innerHTML = `<h1>🎡 연결 중…</h1><p class="muted">호스트를 기다리는 중입니다.</p>`; return }
+  let body = ''
+  if (s.phase === 'lobby') {
+    body = `<div class="card"><h2>대기 중…</h2><p class="muted">호스트가 시작하면 문제가 나타납니다.</p>
+      <p>참가자 ${s.roster.length}명</p></div>`
+  } else if (s.phase === 'question') {
+    const picked = player.myChoice !== null
+    body = `<div class="card">
+        <div class="muted">문제 ${s.q.idx+1} / ${s.q.total}</div>
+        <h2>${esc(s.q.text)}</h2>
+        <div class="timer" id="timer"></div>
+        <div class="opts">${s.q.options.map((o,i)=>
+          `<button class="opt ${picked&&player.myChoice!==i?'dim':''}" data-i="${i}" ${picked?'disabled':''}>${esc(o)}</button>`).join('')}</div>
+        ${picked?'<p class="muted" style="margin-top:12px">답 제출 완료! 결과를 기다리세요.</p>':''}
+      </div>`
+  } else if (s.phase === 'reveal') {
+    const right = player.myChoice === s.correctIdx
+    body = `<div class="card">
+        <h2>${right?'✅ 정답!':(player.myChoice===null?'⌛ 시간 초과':'❌ 오답')}</h2>
+        <div class="opts">${s.options.map((o,i)=>
+          `<div class="opt ${i===s.correctIdx?'right':'dim'}">${esc(o)}</div>`).join('')}</div>
+      </div>
+      <div class="card"><h2>순위</h2>${rosterRows([...s.roster])}</div>`
+  } else { // final
+    body = `<div class="card"><h2>🏆 최종 순위</h2>${rosterRows([...s.roster])}
+      <button class="ghost" onclick="location.href=location.pathname">처음으로</button></div>`
+  }
+  app.innerHTML = `<h1>🎡 ${esc(player.name)}</h1>${body}`
+  app.querySelectorAll('.opt[data-i]').forEach(b => b.onclick = () => submitAnswer(+b.dataset.i))
+  if ($('timer')) startTimer($('timer'), s.q.duration)
+}
+
+let timerRAF
+function startTimer(node, duration) {
+  cancelAnimationFrame(timerRAF)
+  const start = player.qStart || performance.now()
+  const tick = () => {
+    const left = Math.max(0, duration - (performance.now() - start))
+    node.textContent = Math.ceil(left/1000) + 's'
+    if (left > 0 && player.myChoice === null) timerRAF = requestAnimationFrame(tick)
+  }
+  tick()
+}
+
+// boot
+renderHome()
+</script>
+</body>
+</html>
