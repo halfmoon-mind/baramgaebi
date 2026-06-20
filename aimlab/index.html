@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aim Lab Web Test</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="control-panel" aria-label="에임 테스트 설정">
+        <div class="brand-block">
+          <p class="eyebrow">Aim Test</p>
+          <h1>에임 체크</h1>
+        </div>
+
+        <section class="panel-section" aria-labelledby="mode-label">
+          <h2 id="mode-label">모드</h2>
+          <div class="segmented-control" role="tablist" aria-label="훈련 모드">
+            <button class="mode-button active" type="button" data-mode="flick" role="tab" aria-selected="true">Flick</button>
+            <button class="mode-button" type="button" data-mode="grid" role="tab" aria-selected="false">Grid</button>
+            <button class="mode-button" type="button" data-mode="track" role="tab" aria-selected="false">Track</button>
+          </div>
+        </section>
+
+        <section class="panel-section settings-grid" aria-label="세부 설정">
+          <label>
+            <span>시간</span>
+            <select id="durationSelect">
+              <option value="30">30초</option>
+              <option value="45" selected>45초</option>
+              <option value="60">60초</option>
+              <option value="90">90초</option>
+            </select>
+          </label>
+
+          <label>
+            <span>타겟 크기</span>
+            <input id="sizeRange" type="range" min="18" max="52" value="34" />
+          </label>
+
+          <label>
+            <span>속도</span>
+            <input id="speedRange" type="range" min="1" max="8" value="4" />
+          </label>
+        </section>
+
+        <section class="action-row" aria-label="게임 제어">
+          <button id="startButton" class="primary-action" type="button">시작</button>
+          <button id="resetButton" class="ghost-action" type="button">리셋</button>
+        </section>
+
+        <section class="stat-grid" aria-label="현재 기록">
+          <article class="stat-tile">
+            <span>점수</span>
+            <strong id="scoreValue">0</strong>
+          </article>
+          <article class="stat-tile">
+            <span>정확도</span>
+            <strong id="accuracyValue">0%</strong>
+          </article>
+          <article class="stat-tile">
+            <span>평균 반응</span>
+            <strong id="reactionValue">0ms</strong>
+          </article>
+          <article class="stat-tile">
+            <span>최고 연속</span>
+            <strong id="streakValue">0</strong>
+          </article>
+        </section>
+      </aside>
+
+      <section class="arena-shell" aria-label="에임 테스트 플레이 영역">
+        <div class="arena-topbar">
+          <div>
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">준비</span>
+          </div>
+          <time id="timerValue" aria-label="남은 시간">45.0</time>
+        </div>
+
+        <canvas id="aimCanvas" aria-label="에임 테스트 캔버스"></canvas>
+
+        <div id="resultOverlay" class="result-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="resultTitle">
+          <div class="result-panel">
+            <p class="eyebrow">Result</p>
+            <h2 id="resultTitle">세션 완료</h2>
+            <dl class="result-list">
+              <div>
+                <dt>점수</dt>
+                <dd id="finalScore">0</dd>
+              </div>
+              <div>
+                <dt>정확도</dt>
+                <dd id="finalAccuracy">0%</dd>
+              </div>
+              <div>
+                <dt>평균 반응</dt>
+                <dd id="finalReaction">0ms</dd>
+              </div>
+            </dl>
+            <button id="againButton" class="primary-action" type="button">다시 시작</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
