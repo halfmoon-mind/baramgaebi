@@ -1,0 +1,157 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple SD Gothic Neo", sans-serif;
+  background: #f4f5f7;
+  color: #172b4d;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #dfe1e6;
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 18px; margin-right: 8px; }
+
+header select, header input, header button,
+.modal button, .modal input, .modal textarea, .modal select {
+  font: inherit;
+  padding: 8px 10px;        /* ponytail: ~36px high — desktop 기준, 모바일 44px는 나중에 */
+  min-height: 36px;
+  border: 1px solid #dfe1e6;
+  border-radius: 6px;
+  background: #fff;
+}
+
+header input#search { flex: 1; min-width: 120px; }
+
+button { cursor: pointer; transition: background-color .15s ease, box-shadow .15s ease; }
+button:hover { background: #ebecf0; }
+
+/* 키보드 포커스 링 (마우스 클릭 땐 안 뜸) */
+:focus-visible { outline: 2px solid #0052cc; outline-offset: 2px; }
+button.primary { background: #0052cc; color: #fff; border-color: #0052cc; }
+button.primary:hover { background: #0747a6; }
+button.danger { color: #de350b; border-color: #de350b; }
+button.danger:hover { background: #ffebe6; }
+
+/* ----- 보드 ----- */
+.board {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  align-items: flex-start;
+  overflow-x: auto;
+}
+
+.column {
+  background: #ebecf0;
+  border-radius: 8px;
+  width: 300px;
+  flex: 0 0 300px;
+  padding: 8px;
+}
+
+.column.dragover { outline: 2px dashed #0052cc; outline-offset: -2px; }
+
+.column h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #5e6c84;
+  margin: 4px 8px 8px;
+}
+.column h2 .count { color: #6b778c; font-weight: 400; }
+
+.cards { display: flex; flex-direction: column; gap: 8px; min-height: 20px; }
+
+/* 빈 컬럼 안내 (순수 CSS) */
+.cards:empty::after {
+  content: "여기로 카드를 드래그";
+  display: block;
+  text-align: center;
+  color: #97a0af;
+  font-size: 12px;
+  padding: 16px 8px;
+  border: 1px dashed #c1c7d0;
+  border-radius: 6px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 6px;
+  padding: 10px;
+  box-shadow: 0 1px 0 rgba(9,30,66,.25);
+  cursor: grab;
+  border-left: 4px solid #97a0af;
+  transition: box-shadow .15s ease, transform .1s ease;
+}
+.card:hover { box-shadow: 0 4px 8px rgba(9,30,66,.2); }
+.card:active { cursor: grabbing; transform: scale(.98); }
+.card.dragging { opacity: 0.4; }
+.card.prio-high { border-left-color: #de350b; }
+.card.prio-med  { border-left-color: #ff991f; }
+.card.prio-low  { border-left-color: #36b37e; }
+
+.card .title { font-size: 14px; margin-bottom: 6px; word-break: break-word; }
+.card .meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; color: #5e6c84; }
+.card .due { background: #f4f5f7; padding: 1px 6px; border-radius: 4px; }
+.card .due.overdue { background: #ffebe6; color: #de350b; }
+
+.label-chip {
+  background: #dfe1e6;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.add-card {
+  width: 100%;
+  text-align: left;
+  margin-top: 8px;
+  border: none;
+  background: transparent;
+  color: #5e6c84;
+}
+.add-card:hover { background: #dfe1e6; }
+
+/* ----- 모달 ----- */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(9,30,66,.5);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  animation: fade .15s ease;
+}
+.hidden { display: none; }
+
+.modal {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: pop .15s ease;
+}
+
+@keyframes fade { from { opacity: 0; } }
+@keyframes pop  { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+
+/* 접근성: 모션 최소화 설정 존중 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+.modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #5e6c84; }
+.modal .row { display: flex; gap: 12px; }
+.modal .row label { flex: 1; }
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.modal-actions .spacer { flex: 1; }
